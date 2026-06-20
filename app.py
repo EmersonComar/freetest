@@ -397,9 +397,9 @@ with tabs[2]:
                         n_cpes = st.number_input(
                             "Quantidade de CPEs *",
                             min_value=1, max_value=1000,
-                            value=len(preview) if preview else 10,
+                            value=10,
                             step=1,
-                            help="Número total de CPEs a simular. Se maior que a quantidade de proxies, os proxies serão reutilizados."
+                            help="Número total de CPEs a simular. Se maior que a quantidade de proxies, os proxies serão distribuídos aleatoriamente."
                         )
                     else:
                         st.warning("Nenhum proxy disponível. Carregue proxies na aba 'Proxies' primeiro.")
@@ -423,10 +423,9 @@ with tabs[2]:
                             int(term_time) if term_time else None,
                         )
                         import secrets
-                        import itertools
-                        proxy_cycle = itertools.cycle(preview)
+                        import random
                         for i in range(n_cpes):
-                            p = next(proxy_cycle)
+                            p = random.choice(preview)
                             cpe_password = secrets.token_urlsafe(8)
                             db.add_cpe(sid, p["ip"], p["port"],
                                        f"{u_prefix}_{i+1:03d}", cpe_password)
@@ -482,7 +481,7 @@ with tabs[2]:
                             if st.button("▶️ Iniciar", key=f"start_{sim['id']}",
                                          width="stretch", type="primary"):
                                 mgr.start(sim["id"])
-                                st.toast("Simulação iniciada!", icon=" ")
+                                st.toast("Simulação iniciada!", icon="🚀")
                                 time.sleep(0.5)
                                 st.rerun()
                         if running:
