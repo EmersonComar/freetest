@@ -72,8 +72,12 @@ class CPESession(threading.Thread):
         nas_port = random.randint(1000, 60000)
         mac     = self._mac()
 
-        # ── 1. Access-Request ─────────────────────────────────────────────────
-        self._log("INFO", "Sending Access-Request", "Access-Request")
+        # ── Escolha do protocolo LCP ─────────────────────────────────────────
+        available_lcps = cfg.get("lcp_protocols", ["PAP"])
+        lcp_protocol   = random.choice(available_lcps) if available_lcps else "PAP"
+
+        # ── 1. Access-Request ────────────────────────────────────────────────────
+        self._log("INFO", f"Sending Access-Request [{lcp_protocol}]", "Access-Request")
         self.db.cpe_status(self.cpe_id, "authenticating")
 
         try:
@@ -86,6 +90,7 @@ class CPESession(threading.Thread):
                 nas_port=nas_port,
                 calling_station=mac,
                 nas_identifier=f"CPE-{cfg['proxy_ip']}",
+                lcp_protocol=lcp_protocol,
             )
             resp = self._send(pkt, cfg["auth_port"])
         except Exception as e:
@@ -109,7 +114,7 @@ class CPESession(threading.Thread):
             f"Access-Accept ✓  Framed-IP: {framed_ip or 'N/A'}",
             "Access-Accept",
         )
-        self.db.cpe_session(self.cpe_id, self.session_id, framed_ip)
+        self.db.cpe_session(self.cpe_id, self.session_id, framed_ip, lcp_protocol)
 
         if self._stop_event.is_set():   # ← atualizado
             return
@@ -226,6 +231,11 @@ class SimulationManager:
         sessions = []
         for cpe in cpes:
             self.db.cpe_status(cpe["id"], "pending")
+
+            # Parse lcp_protocols stored as comma-separated string
+            raw_lcps = sim.get("lcp_protocols") or "PAP"
+            lcp_list  = [p.strip() for p in raw_lcps.split(",") if p.strip()]
+
             cfg = {
                 "sim_id":           sim_id,
                 "server_ip":        srv["ip"],
@@ -238,6 +248,7 @@ class SimulationManager:
                 "password":         cpe["password"],
                 "interim_interval": sim["interim_update_interval"],
                 "term_time":        sim["termination_time"],
+                "lcp_protocols":    lcp_list,
             }
             sessions.append(CPESession(cpe["id"], cfg, self.db))
 

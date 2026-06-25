@@ -54,6 +54,7 @@ class Database:
                     secret                  TEXT NOT NULL,
                     interim_update_interval INTEGER DEFAULT 300,
                     termination_time        INTEGER,
+                    lcp_protocols           TEXT DEFAULT 'PAP',
                     status                  TEXT DEFAULT 'created',
                     created_at              TEXT DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (radius_server_id) REFERENCES radius_servers(id)
@@ -67,6 +68,7 @@ class Database:
                     username        TEXT NOT NULL,
                     password        TEXT NOT NULL,
                     session_id      TEXT,
+                    lcp_protocol    TEXT DEFAULT 'PAP',
                     status          TEXT DEFAULT 'pending',
                     framed_ip       TEXT,
                     started_at      TEXT,
@@ -98,6 +100,14 @@ class Database:
                 pass
             try:
                 conn.execute("ALTER TABLE simulation_cpes ADD COLUMN upload_bytes INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE simulation_cpes ADD COLUMN lcp_protocol TEXT DEFAULT 'PAP'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE simulations ADD COLUMN lcp_protocols TEXT DEFAULT 'PAP'")
             except Exception:
                 pass
             conn.commit()
@@ -196,12 +206,13 @@ class Database:
     # ── Simulations ───────────────────────────────────────────────────────────
 
     def create_simulation(self, name, server_id, secret,
-                          interim_interval, term_time) -> int:
+                          interim_interval, term_time,
+                          lcp_protocols: str = 'PAP') -> int:
         return self._exec("""
             INSERT INTO simulations
-            (name,radius_server_id,secret,interim_update_interval,termination_time)
-            VALUES(?,?,?,?,?)
-        """, (name, server_id, secret, interim_interval, term_time), rowid=True)
+            (name,radius_server_id,secret,interim_update_interval,termination_time,lcp_protocols)
+            VALUES(?,?,?,?,?,?)
+        """, (name, server_id, secret, interim_interval, term_time, lcp_protocols), rowid=True)
 
     def add_cpe(self, sim_id, proxy_ip, proxy_port, username, password) -> int:
         return self._exec("""
@@ -238,10 +249,11 @@ class Database:
         self._exec(
             "UPDATE simulation_cpes SET status=? WHERE id=?", (status, cpe_id))
 
-    def cpe_session(self, cpe_id: int, session_id: str, framed_ip: str = None):
+    def cpe_session(self, cpe_id: int, session_id: str, framed_ip: str = None,
+                    lcp_protocol: str = None):
         self._exec(
-            "UPDATE simulation_cpes SET session_id=?,framed_ip=? WHERE id=?",
-            (session_id, framed_ip, cpe_id))
+            "UPDATE simulation_cpes SET session_id=?,framed_ip=?,lcp_protocol=COALESCE(?,lcp_protocol) WHERE id=?",
+            (session_id, framed_ip, lcp_protocol, cpe_id))
 
     def cpe_started(self, cpe_id: int):
         self._exec(

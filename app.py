@@ -370,6 +370,16 @@ with tabs[2]:
                         term_time = st.number_input(
                             "Tempo de Encerramento (s)", 60, 86400, 3600)
 
+                    st.markdown("##### Protocolos LCP (Access-Request)")
+                    st.caption(
+                        "Selecione um ou mais protocolos. Se mais de um for marcado, "
+                        "cada CPE sorteia aleatoriamente qual usar."
+                    )
+                    lcp_pap      = st.checkbox("PAP",       value=True,  key="lcp_pap")
+                    lcp_chap     = st.checkbox("CHAP",      value=False, key="lcp_chap")
+                    lcp_mschapv2 = st.checkbox("MS-CHAPv2", value=False, key="lcp_mschapv2")
+                    lcp_eap      = st.checkbox("EAP",       value=False, key="lcp_eap")
+
                     st.markdown("##### Seleção de Proxies (CPEs)")
                     countries = db.proxy_countries()
                     selected_countries = []
@@ -410,8 +420,17 @@ with tabs[2]:
                     "  Criar Simulação", width="stretch", type="primary")
 
                 if submitted:
+                    # --- Validação dos LCPs ---
+                    selected_lcps = []
+                    if lcp_pap:      selected_lcps.append("PAP")
+                    if lcp_chap:     selected_lcps.append("CHAP")
+                    if lcp_mschapv2: selected_lcps.append("MS-CHAPv2")
+                    if lcp_eap:      selected_lcps.append("EAP")
+
                     if not all([sim_name, secret, u_prefix]):
                         st.error("Preencha todos os campos obrigatórios.")
+                    elif not selected_lcps:
+                        st.error("Selecione ao menos um protocolo LCP.")
                     elif not preview:
                         st.error("Nenhum proxy selecionado.")
                     elif n_cpes <= 0:
@@ -421,6 +440,7 @@ with tabs[2]:
                             sim_name, srv_map[sel_srv], secret,
                             int(interim),
                             int(term_time) if term_time else None,
+                            ",".join(selected_lcps),
                         )
                         import secrets
                         import random
@@ -431,7 +451,8 @@ with tabs[2]:
                                        f"{u_prefix}_{i+1:03d}", cpe_password)
                         st.success(
                             f"✅ Simulação **{sim_name}** criada com "
-                            f"{n_cpes} CPE(s) usando {len(preview)} proxy(s)!"
+                            f"{n_cpes} CPE(s) usando {len(preview)} proxy(s)! "
+                            f"LCPs: **{', '.join(selected_lcps)}**"
                         )
                         time.sleep(0.4)
                         st.rerun()
@@ -461,9 +482,11 @@ with tabs[2]:
                     with ci:
                         st.markdown(f"### {badge} {sim['name']}")
                         srv = db.get_server(sim["radius_server_id"])
+                        lcp_display = sim.get("lcp_protocols") or "PAP"
                         st.caption(
                             f"**Servidor:** {srv['name']} ({srv['ip']})  |  "
                             f"**Interim:** {sim['interim_update_interval']}s  |  "
+                            f"**LCPs:** {lcp_display}  |  "
                             f"**Encerramento:** "
                             f"{sim['termination_time']}s" if sim["termination_time"]
                             else "contínuo"
@@ -561,6 +584,7 @@ with tabs[3]:
                 "username":        "Usuário",
                 "proxy_ip":        "Proxy / NAS-IP",
                 "status":          "Status",
+                "lcp_protocol":    "LCP",
                 "session_id":      "Session-ID",
                 "framed_ip":       "Framed-IP",
                 "started_at":      "Início",
@@ -579,6 +603,7 @@ with tabs[3]:
                     "Usuário": st.column_config.TextColumn(width=140),
                     "Proxy / NAS-IP": st.column_config.TextColumn(width=160),
                     "Status": st.column_config.TextColumn(width=120),
+                    "LCP": st.column_config.TextColumn(width=100),
                     "Session-ID": st.column_config.TextColumn(width=110),
                     "Framed-IP": st.column_config.TextColumn(width=130),
                     "Início": st.column_config.TextColumn(width=160),

@@ -4,6 +4,7 @@ RFC 2865 (Authentication) + RFC 2866 (Accounting) + RFC 6613 (TCP transport)
 """
 
 import hashlib
+import hmac
 import os
 import socket
 import struct
@@ -21,11 +22,13 @@ ACCOUNTING_RESPONSE = 5
 # ── Attribute types ───────────────────────────────────────────────────────────
 A_USER_NAME         = 1
 A_USER_PASSWORD     = 2
+A_CHAP_PASSWORD     = 3
 A_NAS_IP            = 4
 A_NAS_PORT          = 5
 A_SERVICE_TYPE      = 6
 A_FRAMED_PROTO      = 7
 A_FRAMED_IP         = 8
+A_CHAP_CHALLENGE    = 60
 A_CALLED_STATION    = 30
 A_CALLING_STATION   = 31
 A_NAS_IDENTIFIER    = 32
@@ -38,6 +41,13 @@ A_ACCT_SESSION_TIME = 46
 A_ACCT_IN_PKTS      = 47
 A_ACCT_OUT_PKTS     = 48
 A_NAS_PORT_TYPE     = 61
+A_EAP_MESSAGE       = 79
+A_VENDOR_SPECIFIC   = 26
+
+# Microsoft Vendor-ID for MS-CHAP
+VENDOR_MICROSOFT    = 311
+MS_CHAP_CHALLENGE   = 11
+MS_CHAP2_RESPONSE   = 25
 
 # ── Acct-Status-Type values ───────────────────────────────────────────────────
 ACCT_START   = 1
@@ -64,7 +74,7 @@ def _ip(t: int, ip: str) -> bytes:
 
 
 def _encrypt_password(password: str, secret: bytes, authenticator: bytes) -> bytes:
-    """RFC 2865 §5.2 User-Password obfuscation."""
+    """RFC 2865 §5.2 User-Password obfuscation (PAP)."""
     pw = password.encode()
     # pad to multiple of 16
     pad = (16 - len(pw) % 16) % 16
@@ -81,6 +91,70 @@ def _encrypt_password(password: str, secret: bytes, authenticator: bytes) -> byt
     return out
 
 
+def _chap_password(password: str, chap_id: int, challenge: bytes) -> bytes:
+    """RFC 1994 CHAP-Password: 1-byte ident + MD5(ident+password+challenge)."""
+    digest = hashlib.md5(bytes([chap_id]) + password.encode() + challenge).digest()
+    return bytes([chap_id]) + digest
+
+
+def _vendor_attr(vendor_id: int, vendor_type: int, value: bytes) -> bytes:
+    """Build a Vendor-Specific attribute (RFC 2865 §5.26)."""
+    vsa = struct.pack("!IBB", vendor_id, vendor_type, len(value) + 2) + value
+    return _attr(A_VENDOR_SPECIFIC, vsa)
+
+
+def _ms_chap2_response(
+    username: str, password: str, challenge: bytes, peer_challenge: bytes
+) -> bytes:
+    """
+    Build MS-CHAPv2 Response value (RFC 2759).
+    Returns the 50-byte binary blob used as MS-CHAP2-Response value.
+    """
+    # NT hash of password
+    nt_hash = hashlib.new("md4", password.encode("utf-16-le")).digest()
+
+    # Challenge hash: SHA1(peer_challenge + challenge + username)[:8]
+    c_hash = hashlib.sha1(peer_challenge + challenge + username.encode()).digest()[:8]
+
+    # NT response (DES-based): 24 bytes
+    from Crypto.Cipher import DES
+
+    def _des_ecb(key_7: bytes, data: bytes) -> bytes:
+        """DES ECB with 7-byte key expanded to 8-byte parity key."""
+        def expand(k7):
+            k8 = bytearray(8)
+            k8[0] = k7[0] >> 1
+            k8[1] = ((k7[0] & 0x01) << 6) | (k7[1] >> 2)
+            k8[2] = ((k7[1] & 0x03) << 5) | (k7[2] >> 3)
+            k8[3] = ((k7[2] & 0x07) << 4) | (k7[3] >> 4)
+            k8[4] = ((k7[3] & 0x0F) << 3) | (k7[4] >> 5)
+            k8[5] = ((k7[4] & 0x1F) << 2) | (k7[5] >> 6)
+            k8[6] = ((k7[5] & 0x3F) << 1) | (k7[6] >> 7)
+            k8[7] = k7[6] & 0x7F
+            return bytes(b << 1 for b in k8)
+        return DES.new(expand(key_7), DES.MODE_ECB).encrypt(data)
+
+    padded = nt_hash + b"\x00" * 5
+    nt_response = (
+        _des_ecb(padded[0:7], c_hash)
+        + _des_ecb(padded[7:14], c_hash)
+        + _des_ecb(padded[14:21], c_hash)
+    )
+
+    # MS-CHAP2-Response: ident(1) + flags(1) + peer_challenge(16)
+    #                    + reserved(8) + nt_response(24)
+    ident = os.urandom(1)
+    return ident + b"\x00" + peer_challenge + b"\x00" * 8 + nt_response
+
+
+def _eap_identity_frame(username: str) -> bytes:
+    """Build a minimal EAP-Response/Identity packet (RFC 3748)."""
+    identity = username.encode()
+    # EAP header: code(1)=2(Response), id(1)=1, length(2), type(1)=1(Identity)
+    length = 5 + len(identity)
+    return struct.pack("!BBHB", 2, 1, length, 1) + identity
+
+
 # ── Packet builders ───────────────────────────────────────────────────────────
 
 def build_access_request(
@@ -88,13 +162,15 @@ def build_access_request(
     nas_ip: str, nas_port: int = 0,
     calling_station: str = None, called_station: str = None,
     nas_identifier: str = None,
+    lcp_protocol: str = "PAP",
 ) -> bytes:
     secret_b = secret.encode()
     auth = os.urandom(16)
 
+    proto = (lcp_protocol or "PAP").upper()
+
     attrs = b""
     attrs += _str(A_USER_NAME, username)
-    attrs += _attr(A_USER_PASSWORD, _encrypt_password(password, secret_b, auth))
     attrs += _ip(A_NAS_IP, nas_ip)
     attrs += _int(A_NAS_PORT, nas_port)
     attrs += _int(A_SERVICE_TYPE, 2)    # Framed
@@ -106,6 +182,29 @@ def build_access_request(
         attrs += _str(A_CALLED_STATION, called_station)
     if nas_identifier:
         attrs += _str(A_NAS_IDENTIFIER, nas_identifier)
+
+    if proto == "PAP":
+        attrs += _attr(A_USER_PASSWORD, _encrypt_password(password, secret_b, auth))
+
+    elif proto == "CHAP":
+        chap_id   = identifier & 0xFF
+        challenge = os.urandom(16)
+        attrs += _attr(A_CHAP_CHALLENGE, challenge)
+        attrs += _attr(A_CHAP_PASSWORD, _chap_password(password, chap_id, challenge))
+
+    elif proto == "MS-CHAPv2":
+        challenge      = os.urandom(16)
+        peer_challenge = os.urandom(16)
+        response_value = _ms_chap2_response(username, password, challenge, peer_challenge)
+        attrs += _vendor_attr(VENDOR_MICROSOFT, MS_CHAP_CHALLENGE, challenge)
+        attrs += _vendor_attr(VENDOR_MICROSOFT, MS_CHAP2_RESPONSE, response_value)
+
+    elif proto == "EAP":
+        eap_frame = _eap_identity_frame(username)
+        attrs += _attr(A_EAP_MESSAGE, eap_frame)
+
+    else:  # fallback PAP
+        attrs += _attr(A_USER_PASSWORD, _encrypt_password(password, secret_b, auth))
 
     length = 20 + len(attrs)
     hdr = struct.pack("!BBH16s", ACCESS_REQUEST, identifier, length, auth)
